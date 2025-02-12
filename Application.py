@@ -10,10 +10,10 @@ matplotlib.use('QtAgg')
 from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QGridLayout, QMenu,
                              QLabel, QLineEdit, QFileDialog, QMessageBox, QFrame,
                              QCheckBox, QPushButton, QRadioButton, QProgressBar,
-                             QSlider, QSizePolicy, QFormLayout
+                             QSlider, QFormLayout, QButtonGroup
 )
 from PyQt6.QtCore import Qt, QSize, pyqtSignal, QTimer, QUrl
-from PyQt6.QtGui import QIntValidator, QPixmap, QImage, QAction, QKeySequence, QDesktopServices
+from PyQt6.QtGui import QIntValidator, QPixmap, QImage, QAction, QKeySequence, QDesktopServices, QShortcut
 
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg
 from matplotlib.figure import Figure
@@ -207,6 +207,8 @@ class ParametersWindow(QMainWindow):
         
         layout.addWidget(closeButton, 16, 4)
         layout.addWidget(resetParametersButton, 16, 2, 1, 2)
+
+        
         
         self.show()
 
@@ -259,6 +261,12 @@ class ParametersWindow(QMainWindow):
             BestResponse.formulaKey = 0
         elif self.setFormula1.isChecked():
             BestResponse.formulaKey = 1
+
+    def changeWeightFunc(self):
+        if self.avrWButton.isChecked():
+            BestResponse.weightFunc = lambda _, x: np.mean(np.sort(x)[-3:])
+        elif self.sumWButton.isChecked():
+            BestResponse.weightFunc = sum
             
 #################################################
 
@@ -363,10 +371,16 @@ class ExplainWindow(QMainWindow):
 
         layout = QFormLayout(central_widget)
 
-        text = 'In the selected region, the program takes an array of points (nodes). For each point, the response (versus time) is calculated and the values of the smoothed response over time are summed. Of all the points, the one with the highest value of this sum is returned.'     
+        text = 'In the selected region, the program takes an array of points (nodes). For each point, the response (versus time) and the weighting factor are calculated. Of all the points, the one with the highest weighting factor is returned. The weighting factor is calculated as the average of the three largest values of the smoothed response.\nAll main parameters except Step are also used in pre-search'     
         label = QLabel(text)
         label.setWordWrap(True)
         layout.addRow(label)
+
+        layout.addRow(QHLine(linewidth=2))
+        text = 'If you check the box, images averaged along the Y-axis will be used in the calculations.'
+        label = QLabel(text)
+        label.setWordWrap(True)
+        layout.addRow(QLabel('Averaged\nimages mode:'), label)
 
         layout.addRow(QHLine(linewidth=2))
         layout.addRow(QLabel('Pre-search parameters'))
@@ -402,7 +416,7 @@ class ExplainWindow(QMainWindow):
         text = 'Number of images of the initial state of the system. The default is 10.'
         label = QLabel(text)
         label.setWordWrap(True)
-        layout.addRow(QLabel('Baseline\n points number:'), label)
+        layout.addRow(QLabel('Baseline\npoints number:'), label)
         layout.addRow(QHLine(linewidth=0))
 
         text = 'Smoothing is performed using an FFT low-pass parabolic filter with a cutoff frequency of f = 1/(2*order*delta_t). The weighting coefficients of the inverse Fourier transform for high-frequency components are given by a parabola with a maximum of 1 at the zero frequency and decreasing to zero at the cutoff frequency. The default value is 3.'
@@ -415,12 +429,8 @@ class ExplainWindow(QMainWindow):
         label = QLabel(text)
         label.setWordWrap(True)
         layout.addRow(QLabel('Response\nformula:'), label)
-        layout.addRow(QHLine(linewidth=0))
 
-        text = 'If you check the box, images averaged along the Y-axis will be used in the calculations.'
-        label = QLabel(text)
-        label.setWordWrap(True)
-        layout.addRow(QLabel('Averaged\nimages mode:'), label)
+
 
         self.show()
 #################################################
@@ -439,6 +449,8 @@ class MainWindow(QMainWindow):
         self.shownPoints = None
         self.pressFlag = False
 
+        self.explainWindow = None
+        self.parametersWindow = None
 
         self.progressbar = QProgressBar()
 
@@ -493,6 +505,9 @@ class MainWindow(QMainWindow):
         instructionAction.setStatusTip("Open instruction to the program in browser")
         programCode = QAction('Program Code', self)
         programCode.triggered.connect(lambda: self.openLink('https://github.com/okor314/BestResponseApp'))
+
+        compare = QShortcut(QKeySequence("Ctrl+Return"), self)
+        compare.activated.connect(self.compareWeigthFuncs)
         
 
         #####
@@ -549,7 +564,7 @@ class MainWindow(QMainWindow):
             self.images = Images(self.fileNames, BestResponse.averagedImagesMode)
 
         x1, y1 = ParametersWindow.parameters['indentationX'], ParametersWindow.parameters['indentationY']
-        x2, y2 = self.images.shape[1]-ParametersWindow.parameters['indentationX'], self.images.shape[0]-ParametersWindow.parameters['indentationY']
+        x2, y2 = self.images.shape[1]-1-ParametersWindow.parameters['indentationX'], self.images.shape[0]-1-ParametersWindow.parameters['indentationY']
         self.preSearchRegion = Rectangle((x1,y1), (x2,y2))
 
         self.preSearchResponse = BestResponse(self.images, self.preSearchRegion)
@@ -587,7 +602,7 @@ class MainWindow(QMainWindow):
             matplotlib.pyplot.figure()
             response = self.regions[list(self.regions)[0]]
             R, G, B, S, smooth_S, _, _ = response.getDataInPoint(response.bestPoint)
-            x = range(1, len(R)+1)
+            t = range(1, len(R)+1)
 
             L = np.sqrt(R**2 + G**2 + B**2)
             Rcos = R/L
@@ -595,18 +610,18 @@ class MainWindow(QMainWindow):
             Bcos = B/L
 
             matplotlib.pyplot.subplot(2, 1, 1)
-            matplotlib.pyplot.plot(x, S, linestyle='-', linewidth=1, marker='s', markersize=5, color='k', label='Response')
-            matplotlib.pyplot.plot(x[:-1], smooth_S, linestyle='-', linewidth=1, marker='o', markersize=5, color='r', label='Smooth')
+            matplotlib.pyplot.plot(t, S, linestyle='-', linewidth=1, marker='s', markersize=5, color='k', label='Response')
+            matplotlib.pyplot.plot(range(1, len(smooth_S)+1), smooth_S, linestyle='-', linewidth=1, marker='o', markersize=5, color='r', label='Smooth')
             matplotlib.pyplot.title(f'Region №{1}$, x={response.bestPoint[0]}$, $y={response.bestPoint[1]}$')
-            matplotlib.pyplot.xlabel('Time')
+            matplotlib.pyplot.xlabel('Time, rel. un.')
             matplotlib.pyplot.ylabel('Response')
             matplotlib.pyplot.legend()
 
             matplotlib.pyplot.subplot(2, 1, 2)
-            matplotlib.pyplot.plot(x, Rcos,  linestyle='-', linewidth=1, marker='s', markersize=5, color='r', label='R/L')
-            matplotlib.pyplot.plot(x, Gcos,  linestyle='-', linewidth=1, marker='o', markersize=5, color='g', label='G/L')
-            matplotlib.pyplot.plot(x, Bcos,  linestyle='-', linewidth=1, marker='^', markersize=5, color='b', label='B/L')
-            matplotlib.pyplot.xlabel('Time')
+            matplotlib.pyplot.plot(t, Rcos,  linestyle='-', linewidth=1, marker='s', markersize=5, color='r', label='R/L')
+            matplotlib.pyplot.plot(t, Gcos,  linestyle='-', linewidth=1, marker='o', markersize=5, color='g', label='G/L')
+            matplotlib.pyplot.plot(t, Bcos,  linestyle='-', linewidth=1, marker='^', markersize=5, color='b', label='B/L')
+            matplotlib.pyplot.xlabel('Time, rel. un.')
             matplotlib.pyplot.legend()
 
             matplotlib.pyplot.tight_layout()
@@ -625,9 +640,9 @@ class MainWindow(QMainWindow):
 
                 matplotlib.pyplot.subplot(2, numRegions+1, i)
                 matplotlib.pyplot.plot(t, S, linestyle='-', linewidth=1, marker='s', markersize=5, color='k', label='Response')
-                matplotlib.pyplot.plot(t[:-1], smooth_S, linestyle='-', linewidth=1, marker='o', markersize=5, color='r', label='Smooth')
+                matplotlib.pyplot.plot(range(1, len(smooth_S)+1), smooth_S, linestyle='-', linewidth=1, marker='o', markersize=5, color='r', label='Smooth')
                 matplotlib.pyplot.title(f'Region №{i}$, x={response.bestPoint[0]}$, $y={response.bestPoint[1]}$')
-                matplotlib.pyplot.xlabel('Time')
+                matplotlib.pyplot.xlabel('Time, rel. un.')
                 matplotlib.pyplot.ylabel('Response')
                 matplotlib.pyplot.legend()
 
@@ -635,24 +650,63 @@ class MainWindow(QMainWindow):
                 matplotlib.pyplot.plot(t, Rcos,  linestyle='-', linewidth=1, marker='s', markersize=5, color='r', label='R/L')
                 matplotlib.pyplot.plot(t, Gcos,  linestyle='-', linewidth=1, marker='o', markersize=5, color='g', label='G/L')
                 matplotlib.pyplot.plot(t, Bcos,  linestyle='-', linewidth=1, marker='^', markersize=5, color='b', label='B/L')
-                matplotlib.pyplot.xlabel('Time')
+                matplotlib.pyplot.xlabel('Time, rel. un.')
                 matplotlib.pyplot.legend()
 
                 i += 1
             
             multyResponse = combineResponses([response for _, response in self.regions.items()], formulaKey=BestResponse.formulaKey)
+            smoothMultyResponse = BestResponse.smoothFFT(self, multyResponse, order=BestResponse.npts)
             matplotlib.pyplot.subplot(2, numRegions+1, i)
             matplotlib.pyplot.plot(t, multyResponse, linestyle='-', linewidth=1, marker='s', markersize=5, color='k', label='Response')
-            matplotlib.pyplot.plot(t[:-1], BestResponse.smoothFFT(self, multyResponse, order=BestResponse.npts),
+            matplotlib.pyplot.plot(range(1, len(smoothMultyResponse)+1), smoothMultyResponse,
                                     linestyle='-', linewidth=1, marker='o', markersize=5, color='r', label='Smooth')
             matplotlib.pyplot.title(f'Combine Responses')
-            matplotlib.pyplot.xlabel('Time')
+            matplotlib.pyplot.xlabel('Time, rel. un.')
             matplotlib.pyplot.ylabel('Response')
             matplotlib.pyplot.legend()
 
             matplotlib.pyplot.tight_layout()
             matplotlib.pyplot.show()
-        
+
+    def compareWeigthFuncs(self):
+        i=0
+        for region in self.regions:
+            i += 1
+            resp = BestResponse(self.images, region)
+            fig, ax = matplotlib.pyplot.subplots(1, 3)
+            fig.suptitle(f'Region №{i}')
+
+            self.progressbar.show()
+            resp.sortPoints(weightFunc=lambda x: np.mean(np.sort(x)[-3:]) , progressBar=self.progressbar)
+            self.progressbar.hide()
+            R, G, B, S, smooth_S1, _, _ = resp.getDataInPoint(resp.bestPoint)
+            t = range(1, len(S)+1)
+            ax[0].plot(t, S, linestyle='-', linewidth=1, marker='s', markersize=5, color='k', label='Response')
+            ax[0].plot(range(1, len(smooth_S1)+1), smooth_S1, linestyle='-', linewidth=1, marker='o', markersize=5, color='r', label='Smooth')
+            ax[0].set_title(f'By max response, $x={resp.bestPoint[0]}$, $y={resp.bestPoint[1]}$')
+            ax[0].set(xlabel='Time, rel. un.', ylabel='Response')
+            ax[0].legend()
+
+            self.progressbar.show()
+            resp.sortPoints(weightFunc=sum, progressBar=self.progressbar)
+            self.progressbar.hide()
+            R, G, B, S, smooth_S2, _, _ = resp.getDataInPoint(resp.bestPoint)
+            t = range(1, len(S)+1)
+            ax[1].plot(t, S, linestyle='-', linewidth=1, marker='s', markersize=5, color='k', label='Response')
+            ax[1].plot(range(1, len(smooth_S2)+1), smooth_S2, linestyle='-', linewidth=1, marker='o', markersize=5, color='b', label='Smooth')
+            ax[1].set_title(f'By sum, $x={resp.bestPoint[0]}$, $y={resp.bestPoint[1]}$')
+            ax[1].set(xlabel='Time, rel. un.', ylabel='Response')
+            ax[1].legend()
+
+            ax[2].plot(range(1, len(smooth_S1)+1), smooth_S1, linestyle='-', linewidth=1, marker='o', markersize=5, color='r', label='by max')
+            ax[2].plot(range(1, len(smooth_S2)+1), smooth_S2, linestyle='-', linewidth=1, marker='o', markersize=5, color='b', label='by sum')
+            ax[2].set_title(f'Comparison of smoothed responses')
+            ax[2].set(xlabel='Time, rel. un.', ylabel='Response')
+            ax[2].legend()
+
+            fig.tight_layout()
+            fig.show()
 
     def createHomePage(self):
         if self.shownPicture is None:
@@ -696,7 +750,7 @@ class MainWindow(QMainWindow):
   
         self.images = Images(self.fileNames, BestResponse.averagedImagesMode)
         x1, y1 = ParametersWindow.parameters['indentationX'], ParametersWindow.parameters['indentationY']
-        x2, y2 = self.images.shape[1]-ParametersWindow.parameters['indentationX'], self.images.shape[0]-ParametersWindow.parameters['indentationY']
+        x2, y2 = self.images.shape[1]-1-ParametersWindow.parameters['indentationX'], self.images.shape[0]-1-ParametersWindow.parameters['indentationY']
         self.preSearchRegion = Rectangle((x1,y1), (x2,y2))
         
         self.shownPicture = self.images[0].copy()
@@ -731,14 +785,18 @@ If necessary, change this by going to the Parameters"""
         
 
         if fDialog.exec():
-            self.preferredPath = fDialog.selectedFiles()[0]
-            self.fileNames = [self.preferredPath+'/'+file for file in os.listdir(self.preferredPath) if file.endswith('.jpg')]
+            preferredPath = fDialog.selectedFiles()[0]
+            fileNames = [preferredPath+'/'+file for file in os.listdir(preferredPath) if file.endswith('.jpg')]
 
-            if len(self.fileNames) > 0:
+            if len(fileNames) > 1:
+                self.preferredPath = preferredPath
+                self.fileNames = fileNames
                 self.preSearchWindow = PreSearchWindow(Images(self.fileNames).shape)
                 self.preSearchWindow.okSignal.connect(self.createHomePage)
-            else:
+            elif len(fileNames) == 0:
                 QMessageBox.critical(self, 'No images in folder', 'There is no images in selected folder. Select another folder with images or add images to this folder.')
+            elif len(fileNames) == 1:
+                QMessageBox.critical(self, 'Only one image in folder', 'There should be at least 2 images in folder. Select another folder with images or add images to this folder.')
 
     def saveData(self, key='RGB+S'):
         if self.regions == {}:
@@ -777,7 +835,7 @@ If necessary, change this by going to the Parameters"""
             B = list(map(str, B))
             S = list(map(str, S))
             smooth_S = list(map(str, smooth_S))
-            smooth_S.append('')
+            if len(S) != len(smooth_S): smooth_S.append('')
 
             data = np.array([t, R, G, B, S, smooth_S])
             data = np.delete(data, saveMode[key], 0)
@@ -796,7 +854,7 @@ If necessary, change this by going to the Parameters"""
             multyResponse = list(map(str, multyResponse))
             smoothMultyResponse = np.round(smoothMultyResponse, 5)
             smoothMultyResponse = list(map(str, smoothMultyResponse))
-            smoothMultyResponse.append('')
+            if len(multyResponse) != len(smoothMultyResponse): smoothMultyResponse.append('')
             data = np.array([t, multyResponse, smoothMultyResponse])
             text = 't\tMultyS\tSmooth\n' + '\n'.join(['\t'.join(row) for row in data.T])
             text = 'Combined Response\n' + text
@@ -865,7 +923,11 @@ If necessary, change this by going to the Parameters"""
 
     def changeParameters(self):
         if  self.images is not None:
-            pw = ParametersWindow(self.images.shape)
+            if self.parametersWindow is not None and self.parametersWindow.isVisible():
+                self.parametersWindow.activateWindow()
+            else:
+                self.parametersWindow = ParametersWindow(self.images.shape)
+        
 
     def parametersExplanation(self):
         self.explainWindow = ExplainWindow()
@@ -877,6 +939,10 @@ If necessary, change this by going to the Parameters"""
         # Open the URL in the default web browser
         if not QDesktopServices.openUrl(url):
             self.statusBar().showMessage("Failed to open URL")
+
+    def closeEvent(self, event):
+        if self.parametersWindow: self.parametersWindow.close()
+        if self.explainWindow: self.explainWindow.close()
 
 
 

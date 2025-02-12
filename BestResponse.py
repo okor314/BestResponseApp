@@ -65,6 +65,7 @@ class BestResponse():
     baseline = 10
     npts = 3
     formulaKey = 0
+    weightFunc = lambda _, x: np.mean(np.sort(x)[-3:])
 
     def __init__(self, images, region):
         self.images = images
@@ -90,8 +91,11 @@ class BestResponse():
         return np.fft.irfft(filtered_fft_data)
 
     
-    def sortPoints(self,  progressBar=None):
-        self.sortedPoints = [((-1,-1), 0)]
+    def sortPoints(self, weightFunc=None , progressBar=None):
+        self.sortedPoints = [((-1,-1), -1)]
+        if weightFunc is None:
+            weightFunc = self.weightFunc
+
         if progressBar != None:
             progressBar.setValue(0)
             progress = 0
@@ -118,7 +122,7 @@ class BestResponse():
                 elif self.formulaKey == 1:
                     S = np.abs(R/L - R0/L0) + np.abs(G/L - G0/L0) + np.abs(B/L - B0/L0)
                 smooth_S = self.smoothFFT(S, order=self.npts)
-                weight = sum(smooth_S)
+                weight = weightFunc(smooth_S)
 
                 left = 0
                 right = len(self.sortedPoints)
@@ -159,7 +163,7 @@ class BestResponse():
                 elif self.formulaKey == 1:
                     S = np.abs(R/L - R0/L0) + np.abs(G/L - G0/L0) + np.abs(B/L - B0/L0)
                 smooth_S = self.smoothFFT(S, order=self.npts)
-                weight = sum(smooth_S)
+                weight = weightFunc(smooth_S)
 
                 left = 0
                 right = len(self.sortedPoints)
